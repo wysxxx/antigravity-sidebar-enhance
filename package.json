@@ -1,0 +1,27 @@
+{
+  "name": "antigravity-sidebar-enhance",
+  "version": "1.0.0",
+  "description": "Zero-ASAR user-layer sidebar enhancement plugin for chuanban-antigravity-theme-patch: bell-toggled time-grouped Recent view with native hover actions & menu, plus inline collapsed project status badges.",
+  "type": "module",
+  "license": "MIT",
+  "author": "wysxxx",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wysxxx/antigravity-sidebar-enhance.git"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node --test sidebar-enhance.test.mjs",
+    "install:plugin": "node install.mjs install",
+    "uninstall:plugin": "node install.mjs uninstall",
+    "status": "node install.mjs status --json"
+  },
+  "keywords": [
+    "antigravity",
+    "chuanban-antigravity-theme-patch",
+    "sidebar",
+    "ui-plugin"
+  ]
+}
