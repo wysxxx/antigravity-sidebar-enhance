@@ -33,7 +33,7 @@
 
 ## 前置要求
 
-- 已安装并启用 [chuanban-antigravity-theme-patch](https://github.com/Anarcadia/chuanban-antigravity-theme-patch)（推荐 `>= v6.0.0`，且开启 `customCss` 与 `customJs` 模块，安装器也会自动检查并开启）。
+- 已安装并启用 [chuanban-antigravity-theme-patch](https://github.com/Anarcadia/chuanban-antigravity-theme-patch)（推荐 `>= v6.0.0`），且在船板配置中保持补丁总开关以及 `customCss`、`customJs` 两个用户模块均处于开启状态（安装器不会改动 `config.json`，仅在输出中汇报这三项状态）。
 - 本地已安装 Node.js（`>= 20`，零第三方 npm 依赖）。
 
 ## 快速安装
@@ -42,7 +42,7 @@
 
 直接把下面这段话发给 Antigravity / Claude Code / Codex：
 
-> 请帮我把 `https://github.com/wysxxx/antigravity-sidebar-enhance` 安装到当前机器的 `chuanban-antigravity-theme-patch` 用户层：先确认本机已安装船板主题补丁，再克隆仓库后执行 `node install.mjs install --json` 并汇报挂载状态；不要改动船板内核文件，也不要影响我已有的其他 `user/` 层插件。
+> 请帮我把 `https://github.com/wysxxx/antigravity-sidebar-enhance` 安装到当前机器的 `chuanban-antigravity-theme-patch` 用户层：先确认本机已安装船板主题补丁且 `user/config.json` 未关闭总开关或 `customCss` / `customJs` 模块，再克隆仓库后执行 `node install.mjs install --json` 并核对输出的挂载与开关状态；不要改动船板内核文件，也不要影响我已有的其他 `user/` 层插件。
 
 ### 方式二：命令行手动安装
 
@@ -50,17 +50,19 @@
 git clone https://github.com/wysxxx/antigravity-sidebar-enhance.git
 cd antigravity-sidebar-enhance
 
-# 安装或幂等更新（船板默认约 2.5 秒自动热重载，无需重启客户端）
+# 安装或幂等更新（仅写入 user/ 标记块；船板默认约 2.5 秒自动热重载，无需重启客户端）
 node install.mjs install --json
 
-# 查看当前挂载状态
+# 查看当前挂载与船板模块开关状态
 node install.mjs status --json
 
 # 运行单元测试（零外部依赖）
 npm test
 ```
 
-> **自定义目录 / WSL 环境说明**：若你的船板 `user/` 目录不在默认位置（`~/.gemini/antigravity/theme-patch/user`），可显式传入 `--target-dir <path>` 或设置环境变量 `AG_THEME_USER_DIR`：
+> **生效核对**：命令返回的 `ok: true` 仅表示标记块已成功写入 `custom.js` / `custom.css`。请同时确认 JSON 返回中的 `patchDisabled`、`customCssDisabled`、`customJsDisabled` 均为 `false`，并在约 2.5 秒后查看侧边栏「项目管理」标题右侧是否已出现小铃铛图标（以及外观设置中是否出现两个开关）。
+
+> **自定义目录 / WSL 环境说明**：若你的船板 `user/` 目录不在默认位置（`~/.gemini/antigravity/theme-patch/user`），请显式传入 `--target-dir <path>`：
 > ```bash
 > node install.mjs install --target-dir "/mnt/c/Users/<YourName>/.gemini/antigravity/theme-patch/user" --json
 > ```
