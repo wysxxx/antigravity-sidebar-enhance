@@ -155,15 +155,26 @@ function loadPluginInSandbox({ doc, win, ctxExtra = {} }) {
   const prevLoc = globalThis.location;
   const cleanups = [];
   const mutObservedTargets = [];
+  const mutObservers = [];
 
   globalThis.document = doc;
   globalThis.window = win;
   globalThis.location = win.location || { pathname: '/' };
   globalThis.MutationObserver = class {
+    constructor(cb) {
+      this.cb = cb;
+      this.disconnected = false;
+      mutObservers.push(this);
+    }
     observe(target) {
       mutObservedTargets.push(target);
     }
-    disconnect() {}
+    disconnect() {
+      this.disconnected = true;
+    }
+    trigger(mutations) {
+      if (!this.disconnected && typeof this.cb === 'function') this.cb(mutations);
+    }
   };
 
   const ctx = {
@@ -185,6 +196,7 @@ function loadPluginInSandbox({ doc, win, ctxExtra = {} }) {
     exports: ctx.__agSidebarEnhanceExports,
     cleanups,
     mutObservedTargets,
+    mutObservers,
     restore() {
       for (const c of cleanups) {
         try {
@@ -617,5 +629,171 @@ test('install.mjs coexists cleanly with ghang marker block, is idempotent, and u
     assert.equal(readFileSync(join(dir, 'custom.css'), 'utf8'), ghangCss);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('caches Fiber bindings, short-circuits streaming Recent syncs, and filters self badge mutations', () => {
+  const storage = new Map();
+  const nowSec = Math.floor(Date.now() / 1000);
+  let summaries = {};
+  for (let i = 1; i <= 30; i++) {
+    summaries[`c${i}`] = {
+      status: i === 30 ? 2 : 1,
+      notFullyIdle: i === 30,
+      lastModifiedTime: { seconds: nowSec - (30 - i) * 60 },
+      annotations: { title: `Task ${i}` },
+      trajectoryMetadata: { projectId: 'p1' }
+    };
+  }
+  const viewed = {};
+  const state = {
+    conversation: { localLastViewedTimes: viewed },
+    trajectorySummaries: { summaries }
+  };
+  const store = {
+    getState: () => state,
+    subscribe: () => () => {}
+  };
+  const router = { navigate() {}, buildLocation() {} };
+  const agentService = { updateConversationAnnotations: async () => {} };
+
+  const body = createMockElement('body');
+  const sidebar = createMockElement('div');
+  sidebar.setAttribute('data-testid', 'conversation-list-sidebar');
+  const listRoot = createMockElement('div');
+  listRoot.__reactFiber$1 = {
+    memoizedState: { memoizedState: [{ id: 'p1', label: 'api-gateway', conversationIds: Object.keys(summaries) }] },
+    dependencies: {
+      firstContext: {
+        memoizedValue: { store, navigate: router.navigate, buildLocation: router.buildLocation, ...agentService }
+      }
+    },
+    return: null
+  };
+
+  const stickyHdr = createMockElement('div');
+  const sectionHdr = createMockElement('div');
+  sectionHdr.setAttribute('data-testid', 'section-header');
+  sectionHdr.setAttribute('data-section-id', 'main-section-header');
+  sectionHdr.setAttribute('data-title', 'Projects');
+  const h2 = createMockElement('h2');
+  const actionsWrap = createMockElement('span');
+  const addProjBtn = createMockElement('button');
+  addProjBtn.setAttribute('data-testid', 'sidebar-add-project-button');
+  actionsWrap.appendChild(addProjBtn);
+  sectionHdr.appendChild(h2);
+  sectionHdr.appendChild(actionsWrap);
+  stickyHdr.appendChild(sectionHdr);
+  listRoot.appendChild(stickyHdr);
+
+  const dropSection = createMockElement('div');
+  dropSection.setAttribute('data-sidebar-section-drop-id', 'p1');
+  const projBtn = createMockElement('button');
+  projBtn.setAttribute('data-testid', 'project-header');
+  projBtn.setAttribute('aria-expanded', 'false');
+  const titleRow = createMockElement('span');
+  const titleSpan = createMockElement('span');
+  titleSpan.className = 'truncate';
+  titleSpan.textContent = 'api-gateway';
+  titleRow.appendChild(titleSpan);
+  projBtn.appendChild(titleRow);
+  dropSection.appendChild(projBtn);
+  listRoot.appendChild(dropSection);
+  sidebar.appendChild(listRoot);
+  body.appendChild(sidebar);
+
+  const win = {
+    localStorage: {
+      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+      setItem: (k, v) => storage.set(k, String(v))
+    },
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  const doc = {
+    body,
+    documentElement: { getAttribute: () => 'zh-CN', lang: 'zh-CN' },
+    createElement: (tag) => createMockElement(tag),
+    querySelector: (sel) => (sel === '[data-testid="conversation-list-sidebar"]' ? sidebar : body.querySelector(sel)),
+    querySelectorAll: (sel) => (sel === '[data-testid="project-header"]' ? [projBtn] : body.querySelectorAll(sel)),
+    addEventListener() {},
+    removeEventListener() {},
+    hasFocus: () => true
+  };
+
+  const env = loadPluginInSandbox({ doc, win });
+  try {
+    const { bindingsCache, recentMod, folderMod, isSelfSidebarMutation } = env.exports;
+
+    // 1. Fiber binding cache: full crawl happens only once for the same connected sidebar
+    const crawlsAfterMount = bindingsCache.fullCrawlCount;
+    assert.equal(crawlsAfterMount, 1);
+
+    // Toggle Recent view on -> renders once, still 0 additional full Fiber crawls
+    const bellBtn = actionsWrap.children[0];
+    bellBtn.dispatch('click', { preventDefault() {}, stopPropagation() {} });
+    assert.equal(bindingsCache.fullCrawlCount, 1);
+    assert.equal(recentMod.selectRunCount, 1);
+    assert.equal(recentMod.renderWriteCount, 1);
+
+    // Verify v6.0.7 universal no-i18n contract attributes
+    const wrap = listRoot.querySelector('#ag-sb-recent-list-wrap');
+    assert.equal(wrap.getAttribute('data-ag-plugin-ui'), '1');
+    assert.equal(wrap.getAttribute('data-ag-no-i18n'), '1');
+
+    // 2a. Level-1 short-circuit: unrelated Redux tick (same summaries reference) skips O(N) selection completely
+    recentMod.sync();
+    recentMod.sync();
+    assert.equal(recentMod.selectRunCount, 1);
+    assert.equal(recentMod.renderWriteCount, 1);
+
+    // 2b. Level-2 short-circuit: streaming updates running item timestamp (new summaries ref),
+    // but Top-15 render signature is unchanged -> skips DOM innerHTML rebuild so hover is never disrupted
+    summaries = {
+      ...summaries,
+      c30: { ...summaries.c30, lastModifiedTime: { seconds: nowSec + 5 } }
+    };
+    state.trajectorySummaries = { summaries };
+    recentMod.sync();
+    assert.equal(recentMod.selectRunCount, 2);
+    assert.equal(recentMod.renderWriteCount, 1);
+
+    // Real visual change (title changes) -> triggers DOM rebuild
+    summaries = {
+      ...summaries,
+      c30: { ...summaries.c30, annotations: { title: 'Task 30 Updated' } }
+    };
+    state.trajectorySummaries = { summaries };
+    recentMod.sync();
+    assert.equal(recentMod.renderWriteCount, 2);
+    assert.match(wrap.innerHTML, /Task 30 Updated/);
+
+    // 3. FolderStatusModule observer ignores self-inflicted badge mutations
+    const badgeEl = titleRow.querySelector('.ag-sb-folder-badges');
+    assert.ok(badgeEl);
+    assert.equal(badgeEl.getAttribute('data-ag-plugin-ui'), '1');
+    assert.equal(isSelfSidebarMutation({ type: 'childList', target: badgeEl, addedNodes: [], removedNodes: [] }), true);
+    assert.equal(isSelfSidebarMutation({ type: 'childList', target: titleRow, addedNodes: [badgeEl], removedNodes: [] }), true);
+    assert.equal(isSelfSidebarMutation({ type: 'attributes', target: projBtn, attributeName: 'aria-expanded' }), false);
+
+    let scheduled = 0;
+    const origSchedule = folderMod.scheduleSync.bind(folderMod);
+    folderMod.scheduleSync = () => {
+      scheduled++;
+    };
+    try {
+      folderMod.observer.trigger([
+        { type: 'childList', target: badgeEl, addedNodes: [], removedNodes: [] },
+        { type: 'childList', target: titleRow, addedNodes: [badgeEl], removedNodes: [] }
+      ]);
+      assert.equal(scheduled, 0, 'Self badge mutations must not re-schedule sync');
+
+      folderMod.observer.trigger([{ type: 'attributes', target: projBtn, attributeName: 'aria-expanded' }]);
+      assert.equal(scheduled, 1, 'Native project-header aria-expanded change must still schedule sync');
+    } finally {
+      folderMod.scheduleSync = origSchedule;
+    }
+  } finally {
+    env.restore();
   }
 });

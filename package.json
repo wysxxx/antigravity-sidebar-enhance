@@ -1,6 +1,6 @@
 {
   "name": "antigravity-sidebar-enhance",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Zero-ASAR user-layer sidebar enhancement plugin for chuanban-antigravity-theme-patch: bell-toggled time-grouped Recent view with native hover actions & menu, plus inline collapsed project status badges.",
   "type": "module",
   "license": "MIT",

@@ -358,11 +358,101 @@
     return `<span aria-hidden="true" class="relative inline-flex items-center justify-center shrink-0" style="width:16px;height:16px">${glyph}<span class="ag-sb-pending-dot absolute rounded-full" style="width:5px;height:5px;top:0;right:0"></span></span>`;
   }
 
-  function findSidebarBindings() {
+  const bindingsCache = {
+    sidebar: null,
+    listDiv: null,
+    fiberKey: null,
+    store: null,
+    router: null,
+    agentService: null,
+    startProjectConversation: null,
+    groupsById: new Map(),
+    projectLabels: new Map(),
+    groupsMaxDepth: 36,
+    groupsSyncedAt: 0,
+    fullCrawlCount: 0
+  };
+
+  function resetBindingsCache() {
+    bindingsCache.sidebar = null;
+    bindingsCache.listDiv = null;
+    bindingsCache.fiberKey = null;
+    bindingsCache.store = null;
+    bindingsCache.router = null;
+    bindingsCache.agentService = null;
+    bindingsCache.startProjectConversation = null;
+    bindingsCache.groupsById = new Map();
+    bindingsCache.projectLabels = new Map();
+    bindingsCache.groupsMaxDepth = 36;
+    bindingsCache.groupsSyncedAt = 0;
+  }
+
+  function extractGroupsFromFiber(startFiber, maxDepth) {
+    const groupsById = new Map();
+    const projectLabels = new Map();
+    let foundDepth = -1;
+    for (let d = 0, f = startFiber; f && d < maxDepth; d++, f = f.return) {
+      for (let s = f.memoizedState; s; s = s.next) {
+        const v = s.memoizedState;
+        if (Array.isArray(v) && v.length && v[0]?.conversationIds) {
+          for (const g of v) {
+            if (g?.id) {
+              groupsById.set(g.id, g.conversationIds);
+              if (typeof g.label === 'string') projectLabels.set(g.id, g.label);
+            }
+          }
+          foundDepth = d;
+          break;
+        }
+      }
+      if (groupsById.size) break;
+    }
+    return { groupsById, projectLabels, foundDepth };
+  }
+
+  function findSidebarBindings({ refreshGroups = true } = {}) {
     if (typeof document !== 'object') return null;
     const sidebar = document.querySelector?.('[data-testid="conversation-list-sidebar"]');
-    if (!sidebar) return null;
+    if (!sidebar) {
+      resetBindingsCache();
+      return null;
+    }
     const listDiv = sidebar.firstElementChild || sidebar;
+    const now = Date.now();
+
+    if (
+      bindingsCache.sidebar === sidebar &&
+      bindingsCache.listDiv === listDiv &&
+      sidebar.isConnected !== false &&
+      bindingsCache.store
+    ) {
+      if (refreshGroups && now - bindingsCache.groupsSyncedAt >= 250) {
+        const key =
+          bindingsCache.fiberKey ||
+          Object.keys(listDiv).find((k) => k.startsWith('__reactFiber$')) ||
+          Object.keys(sidebar).find((k) => k.startsWith('__reactFiber$'));
+        const f = key ? listDiv[key] || sidebar[key] : null;
+        if (f) {
+          const { groupsById, projectLabels, foundDepth } = extractGroupsFromFiber(f, bindingsCache.groupsMaxDepth);
+          if (groupsById.size) {
+            bindingsCache.groupsById = groupsById;
+            bindingsCache.projectLabels = projectLabels;
+            if (foundDepth >= 0) bindingsCache.groupsMaxDepth = Math.min(36, foundDepth + 4);
+          }
+        }
+        bindingsCache.groupsSyncedAt = now;
+      }
+      return {
+        store: bindingsCache.store,
+        router: bindingsCache.router,
+        agentService: bindingsCache.agentService,
+        startProjectConversation: bindingsCache.startProjectConversation,
+        groupsById: bindingsCache.groupsById,
+        projectLabels: bindingsCache.projectLabels,
+        sidebar
+      };
+    }
+
     const key =
       Object.keys(listDiv).find((k) => k.startsWith('__reactFiber$')) ||
       Object.keys(sidebar).find((k) => k.startsWith('__reactFiber$'));
@@ -371,8 +461,11 @@
     let router = null;
     let agentService = null;
     let startProjectConversation = null;
+    let foundGroupsDepth = -1;
     const groupsById = new Map();
     const projectLabels = new Map();
+    bindingsCache.fullCrawlCount += 1;
+
     for (let d = 0; f && d < 36; d++, f = f.return) {
       for (let s = f.memoizedState; s; s = s.next) {
         const v = s.memoizedState;
@@ -383,6 +476,7 @@
               if (typeof g.label === 'string') projectLabels.set(g.id, g.label);
             }
           }
+          foundGroupsDepth = d;
         }
         if (
           !startProjectConversation &&
@@ -409,7 +503,50 @@
       }
       if (store && router && agentService && groupsById.size && startProjectConversation) break;
     }
-    return store ? { store, router, agentService, startProjectConversation, groupsById, projectLabels, sidebar } : null;
+
+    if (!store) return null;
+    bindingsCache.sidebar = sidebar;
+    bindingsCache.listDiv = listDiv;
+    bindingsCache.fiberKey = key || null;
+    bindingsCache.store = store;
+    bindingsCache.router = router;
+    bindingsCache.agentService = agentService;
+    bindingsCache.startProjectConversation = startProjectConversation;
+    bindingsCache.groupsById = groupsById;
+    bindingsCache.projectLabels = projectLabels;
+    bindingsCache.groupsMaxDepth = foundGroupsDepth >= 0 ? Math.min(36, foundGroupsDepth + 4) : 12;
+    bindingsCache.groupsSyncedAt = now;
+    return { store, router, agentService, startProjectConversation, groupsById, projectLabels, sidebar };
+  }
+
+  function isPluginDomNode(node) {
+    if (!node || typeof node !== 'object') return false;
+    if (
+      typeof node.matches === 'function' &&
+      (node.matches('.ag-sb-folder-badges') || node.matches('[data-ag-sb-ui="1"]') || node.matches('[data-ag-plugin-ui="1"]'))
+    ) {
+      return true;
+    }
+    if (
+      typeof node.closest === 'function' &&
+      (node.closest('.ag-sb-folder-badges') || node.closest('[data-ag-sb-ui="1"]') || node.closest('[data-ag-plugin-ui="1"]'))
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function isSelfSidebarMutation(mutation) {
+    if (!mutation) return true;
+    if (isPluginDomNode(mutation.target)) return true;
+    if (mutation.type === 'childList') {
+      const added = Array.from(mutation.addedNodes || []);
+      const removed = Array.from(mutation.removedNodes || []);
+      if ((added.length > 0 || removed.length > 0) && added.every(isPluginDomNode) && removed.every(isPluginDomNode)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function conversationIdsForProject(projectId, state, groupsById) {
@@ -686,7 +823,12 @@
       this.observer?.disconnect();
       this.sidebarEl = sidebar;
       if (typeof MutationObserver === 'function') {
-        this.observer = new MutationObserver(() => this.scheduleSync());
+        this.observer = new MutationObserver((mutations) => {
+          if (Array.isArray(mutations) && mutations.length > 0 && mutations.every(isSelfSidebarMutation)) {
+            return;
+          }
+          this.scheduleSync();
+        });
         this.observer.observe(sidebar, {
           childList: true,
           subtree: true,
@@ -752,6 +894,8 @@
         if (existing && existing !== badgeEl) existing.remove();
         badgeEl.className = 'ag-sb-folder-badges';
         badgeEl.setAttribute('data-ag-sb-ui', '1');
+        badgeEl.setAttribute('data-ag-plugin-ui', '1');
+        badgeEl.setAttribute('data-ag-no-i18n', '1');
         badgeEl.setAttribute('aria-label', result.summaryText);
         badgeEl.setAttribute('title', result.tooltipText || result.summaryText);
         const html = result.badges
@@ -815,6 +959,13 @@
       this.menuOpenId = null;
       this.renamingId = null;
       this.deleteBackdropEl = null;
+      this.lastSummariesRef = null;
+      this.lastViewedRef = null;
+      this.lastLabelsRef = null;
+      this.lastInputMeta = '';
+      this.lastRenderSig = '';
+      this.selectRunCount = 0;
+      this.renderWriteCount = 0;
       this.onFocus = () => {
         if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
           this.closeKebabMenu();
@@ -929,6 +1080,8 @@
           btn.type = 'button';
           btn.className = `ag-sb-recent-bell-btn ${siblingBtn ? siblingBtn.className.replace(/\bpopover-trigger-element\b/g, '').trim() : DEFAULT_ICON_BTN_CLASS}`;
           btn.setAttribute('data-ag-sb-ui', '1');
+          btn.setAttribute('data-ag-plugin-ui', '1');
+          btn.setAttribute('data-ag-no-i18n', '1');
           btn.setAttribute('data-testid', 'ag-sb-recent-toggle-button');
           btn.setAttribute('data-no-drag', '');
           btn.innerHTML = BELL_SVG;
@@ -955,6 +1108,8 @@
           lbl = document.createElement('span');
           lbl.className = 'ag-sb-recent-title-label truncate';
           lbl.setAttribute('data-ag-sb-ui', '1');
+          lbl.setAttribute('data-ag-plugin-ui', '1');
+          lbl.setAttribute('data-ag-no-i18n', '1');
           h2.appendChild(lbl);
         }
         if (lbl.textContent !== t.title) lbl.textContent = t.title;
@@ -995,6 +1150,8 @@
       const backdrop = document.createElement('div');
       backdrop.id = DELETE_BACKDROP_ID;
       backdrop.setAttribute('data-ag-sb-ui', '1');
+      backdrop.setAttribute('data-ag-plugin-ui', '1');
+      backdrop.setAttribute('data-ag-no-i18n', '1');
       const dlg = document.createElement('div');
       dlg.id = 'ag-sb-delete-dialog';
       dlg.setAttribute('role', 'dialog');
@@ -1065,6 +1222,8 @@
       sub.id = KEBAB_SUBMENU_ID;
       sub.setAttribute('role', 'menu');
       sub.setAttribute('data-ag-sb-ui', '1');
+      sub.setAttribute('data-ag-plugin-ui', '1');
+      sub.setAttribute('data-ag-no-i18n', '1');
       for (const s of subItems) {
         const b = document.createElement('button');
         b.type = 'button';
@@ -1107,6 +1266,8 @@
       menu.id = KEBAB_MENU_ID;
       menu.setAttribute('role', 'menu');
       menu.setAttribute('data-ag-sb-ui', '1');
+      menu.setAttribute('data-ag-plugin-ui', '1');
+      menu.setAttribute('data-ag-no-i18n', '1');
       menu.setAttribute('data-cascade-id', item.id);
 
       const copySubItems = [
@@ -1194,6 +1355,8 @@
       const wrap = document.createElement('div');
       wrap.id = RECENT_LIST_WRAP_ID;
       wrap.setAttribute('data-ag-sb-ui', '1');
+      wrap.setAttribute('data-ag-plugin-ui', '1');
+      wrap.setAttribute('data-ag-no-i18n', '1');
       wrap.setAttribute('role', 'region');
       wrap.addEventListener('click', (e) => {
         if (e.target.closest?.('.ag-sb-rename-input')) return;
@@ -1258,6 +1421,11 @@
       this.closeKebabMenu();
       this.closeDeleteDialog();
       this.renamingId = null;
+      this.lastSummariesRef = null;
+      this.lastViewedRef = null;
+      this.lastLabelsRef = null;
+      this.lastInputMeta = '';
+      this.lastRenderSig = '';
       this.listWrap?.remove();
       this.listWrap = null;
       try {
@@ -1271,7 +1439,7 @@
     sync() {
       if (!this.mounted) return;
       this.attachObserver();
-      const bindings = findSidebarBindings();
+      const bindings = findSidebarBindings({ refreshGroups: this.recentMode });
       if (!bindings?.sidebar) return;
 
       const { store, router, projectLabels, sidebar } = bindings;
@@ -1310,14 +1478,55 @@
       const activeId =
         (typeof location === 'object' ? location.pathname.match(/\/c\/([a-f0-9-]{36})/i)?.[1] : null) || null;
       const hasFocus = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+      const nowMs = Date.now();
+      const nowDate = new Date(nowMs);
+      const dayKey = `${nowDate.getFullYear()}-${nowDate.getMonth()}-${nowDate.getDate()}`;
+      const summariesRef = state?.trajectorySummaries?.summaries || null;
+      const viewedRef = state?.conversation?.localLastViewedTimes || null;
+      const inputMeta = `${activeId || ''}|${hasFocus ? 1 : 0}|${zh ? 1 : 0}|${this.renamingId || ''}|${this.menuOpenId || ''}|${dayKey}|${this.limit}`;
+      const wrap = this.ensureListWrap(listRoot, this.stickyHdrEl);
+      if (wrap.getAttribute('aria-label') !== t.aria) wrap.setAttribute('aria-label', t.aria);
+
+      // Level-1 O(1) short-circuit: skip scanning 1,500+ summaries when Redux summaries & view inputs are unchanged
+      if (
+        wrap.__agSbSig &&
+        summariesRef === this.lastSummariesRef &&
+        viewedRef === this.lastViewedRef &&
+        projectLabels === this.lastLabelsRef &&
+        inputMeta === this.lastInputMeta
+      ) {
+        return;
+      }
+
+      this.selectRunCount += 1;
       const { items } = selectRecentConversations(state, projectLabels, activeId, hasFocus, this.limit);
 
       this.itemsById.clear();
       for (const it of items) this.itemsById.set(it.id, it);
 
-      const groups = groupRecentConversations(items, Date.now(), zh);
-      const wrap = this.ensureListWrap(listRoot, this.stickyHdrEl);
-      wrap.setAttribute('aria-label', t.aria);
+      const groups = groupRecentConversations(items, nowMs, zh);
+      this.lastSummariesRef = summariesRef;
+      this.lastViewedRef = viewedRef;
+      this.lastLabelsRef = projectLabels;
+      this.lastInputMeta = inputMeta;
+
+      // Level-2 Top-15 render signature short-circuit: skip HTML generation & DOM rebuild when visible Top-15 is unchanged
+      const renderSig = `${zh ? 'zh' : 'en'}::${groups
+        .map(
+          (grp) =>
+            `${grp.key}[${grp.items
+              .map(
+                (item) =>
+                  `${item.id}|${item.title}|${item.project}|${item.status?.kind || ''}|${item.status?.subkind || ''}|${item.pinned ? 1 : 0}|${item.isUnread ? 1 : 0}|${item.id === activeId ? 1 : 0}|${this.renamingId === item.id ? 1 : 0}|${this.menuOpenId === item.id ? 1 : 0}`
+              )
+              .join(';')}]`
+        )
+        .join('||')}`;
+
+      if (wrap.__agSbSig === renderSig) {
+        this.lastRenderSig = renderSig;
+        return;
+      }
 
       const html = groups.length
         ? groups
@@ -1340,9 +1549,9 @@
                     item.pinned && !item.status ? `<span class="ag-sb-recent-pin-dot">${PIN_SM_SVG}</span>` : '';
                   const titleHtml = isRenaming
                     ? `<input type="text" class="ag-sb-rename-input" value="${esc(item.title)}" />`
-                    : `<span class="ag-sb-recent-title" title="${esc(item.title)}">${esc(item.title)}</span>`;
+                    : `<span class="ag-sb-recent-title" data-ag-no-i18n="1" title="${esc(item.title)}">${esc(item.title)}</span>`;
                   const projHtml = item.project
-                    ? `<span class="ag-sb-recent-project" title="${esc(item.project)}">${esc(item.project)}</span>`
+                    ? `<span class="ag-sb-recent-project" data-ag-no-i18n="1" title="${esc(item.project)}">${esc(item.project)}</span>`
                     : '';
 
                   return `
@@ -1368,10 +1577,11 @@
             .join('')
         : `<div class="ag-sb-recent-empty">${esc(t.empty)}</div>`;
 
-      if (wrap.__agSbHtml !== html) {
-        wrap.innerHTML = html;
-        wrap.__agSbHtml = html;
-      }
+      wrap.innerHTML = html;
+      wrap.__agSbHtml = html;
+      wrap.__agSbSig = renderSig;
+      this.lastRenderSig = renderSig;
+      this.renderWriteCount += 1;
     }
 
     unmount(resetMode = false) {
@@ -1536,6 +1746,8 @@
     const row = document.createElement('div');
     row.setAttribute(spec.rowAttr, '1');
     row.setAttribute('data-ag-sb-ui', '1');
+    row.setAttribute('data-ag-plugin-ui', '1');
+    row.setAttribute('data-ag-no-i18n', '1');
     row.className = rowClassName;
 
     const leftCol = document.createElement('div');
@@ -1722,6 +1934,7 @@
     window.removeEventListener?.('popstate', handlePopstate);
     recentMod.unmount(false);
     folderMod.unmount();
+    resetBindingsCache();
     cleanupSettingsDom();
     try {
       delete window.__ag_teardown_sidebar_enhance_fn;
@@ -1752,6 +1965,8 @@
       renderBadgeIcon,
       secondsOf,
       findSidebarBindings,
+      bindingsCache,
+      isSelfSidebarMutation,
       isZhLang,
       resolveProjectLabel,
       resolveProjectId,

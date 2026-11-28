@@ -84,7 +84,8 @@ node install.mjs uninstall --json
 
 - **纯 `user/` 层标记块**：仅读写 `~/.gemini/antigravity/theme-patch/user/custom.js` 与 `custom.css` 内的专属标记块，原子替换写入，不触碰 `core/`、不修改 `app.asar`、不重签名。
 - **内部状态读取与原生操作**：通过只读遍历客户端 React Fiber / Redux store 聚合会话状态，并复用 Antigravity 宿主自身已注入的路由与会话服务（重命名、置顶、已读/未读、分屏、归档、停止、删除）；**零外部网络请求、零遥测上报、零凭据访问**。
-- **生命周期与性能收敛**：不使用挂载在 `document.body` 上的全局 `MutationObserver`，通过船板 `ctx.onCleanup` 完整回收全部定时器、store 订阅与 `window`/`document` 监听器（已由自动化单测验证零泄漏）。
+- **生命周期与性能收敛**：不使用挂载在 `document.body` 上的全局 `MutationObserver`，通过船板 `ctx.onCleanup` 完整回收全部定时器、store 订阅与 `window`/`document` 监听器（已由自动化单测验证零泄漏）；针对 1,500+ 条历史会话重度库内置 React Fiber 单例绑定缓存、后台流式输出两级重绘短路（O(1) 引用短路 + Top-15 渲染签名短路，避免打断悬停态）与折叠角标观察器自激过滤。
+- **船板 `v6.0.7+` 免误翻契约对齐**：所有插件容器与自绘条目均标注 `data-ag-sb-ui` / `data-ag-plugin-ui` / `data-ag-no-i18n`，与船板主仓 `v6.0.7+` 的免误翻旁路规则天然协同，避免英文项目名或英文对话标题被误译。
 
 ## 开源致谢与许可
 
